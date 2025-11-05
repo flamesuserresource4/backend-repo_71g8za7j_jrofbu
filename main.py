@@ -1,71 +1,100 @@
-import os
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from __future__ import annotations
 
-app = FastAPI()
+from datetime import datetime
+from typing import Any, Dict, Optional
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+from database import create_document, db, get_document_by_id, get_documents, update_document
+from schemas import Activity, Document, Employee, User
+
+app = FastAPI(title="InnovaIndustria API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.get("/")
-def read_root():
-    return {"message": "Hello from FastAPI Backend!"}
 
-@app.get("/api/hello")
-def hello():
-    return {"message": "Hello from the backend API!"}
-
-@app.get("/test")
-def test_database():
-    """Test endpoint to check if database is available and accessible"""
-    response = {
-        "backend": "✅ Running",
-        "database": "❌ Not Available",
-        "database_url": None,
-        "database_name": None,
-        "connection_status": "Not Connected",
-        "collections": []
-    }
-    
-    try:
-        # Try to import database module
-        from database import db
-        
-        if db is not None:
-            response["database"] = "✅ Available"
-            response["database_url"] = "✅ Configured"
-            response["database_name"] = db.name if hasattr(db, 'name') else "✅ Connected"
-            response["connection_status"] = "Connected"
-            
-            # Try to list collections to verify connectivity
-            try:
-                collections = db.list_collection_names()
-                response["collections"] = collections[:10]  # Show first 10 collections
-                response["database"] = "✅ Connected & Working"
-            except Exception as e:
-                response["database"] = f"⚠️  Connected but Error: {str(e)[:50]}"
-        else:
-            response["database"] = "⚠️  Available but not initialized"
-            
-    except ImportError:
-        response["database"] = "❌ Database module not found (run enable-database first)"
-    except Exception as e:
-        response["database"] = f"❌ Error: {str(e)[:50]}"
-    
-    # Check environment variables
-    import os
-    response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
-    response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
-    
-    return response
+class HealthResponse(BaseModel):
+    status: str
+    time: datetime
 
 
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+@app.get("/test", response_model=HealthResponse)
+async def test() -> HealthResponse:
+    # A simple db touch to ensure connection works
+    _ = await db.command("ping")
+    return HealthResponse(status="ok", time=datetime.utcnow())
+
+
+# Generic helpers
+async def list_items(collection: str, limit: int = 100):
+    docs = await get_documents(collection, limit=limit)
+    for d in docs:
+        d["id"] = str(d.pop("_id"))
+        if "created_at" in d:
+            d["created_at"] = d["created_at"].isoformat()
+        if "updated_at" in d:
+            d["updated_at"] = d["updated_at"].isoformat()
+    return docs
+
+
+async def create_item(collection: str, data: Dict[str, Any]):
+    created = await create_document(collection, data)
+    if not created:
+        raise HTTPException(status_code=400, detail="Failed to create")
+    created["id"] = str(created.pop("_id"))
+    if "created_at" in created:
+        created["created_at"] = created["created_at"].isoformat()
+    if "updated_at" in created:
+        created["updated_at"] = created["updated_at"].isoformat()
+    return created
+
+
+# Users
+@app.get("/users")
+async def get_users():
+    return await list_items("user")
+
+
+@app.post("/users")
+async def create_user(user: User):
+    return await create_item("user", user.model_dump())
+
+
+# Employees
+@app.get("/employees")
+async def get_employees():
+    return await list_items("employee")
+
+
+@app.post("/employees")
+async def create_employee(employee: Employee):
+    return await create_item("employee", employee.model_dump())
+
+
+# Documents
+@app.get("/documents")
+async def get_docs():
+    return await list_items("document")
+
+
+@app.post("/documents")
+async def create_doc(doc: Document):
+    return await create_item("document", doc.model_dump())
+
+
+# Activities
+@app.get("/activities")
+async def get_activities():
+    return await list_items("activity")
+
+
+@app.post("/activities")
+async def create_activity(activity: Activity):
+    return await create_item("activity", activity.model_dump())
